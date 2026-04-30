@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import queue
@@ -50,8 +51,27 @@ class Song:
     file_count: int
 
 
+ProgressCallback = Callable[[str, int, int | None, str], None]
+
+
 def log_print(message: str) -> None:
     print(message, flush=True)
+
+
+def progress_print(phase: str, current: int, total: int | None, detail: str) -> None:
+    if not total:
+        log_print(f"{phase}: {detail}")
+        return
+    width = 28
+    complete = min(width, int(width * current / total))
+    bar = "#" * complete + "-" * (width - complete)
+    print(f"\r{phase}: [{bar}] {current}/{total} {detail[:60]:60}", end="", flush=True)
+    if current >= total:
+        print(flush=True)
+
+
+def noop_progress(_phase: str, _current: int, _total: int | None, _detail: str) -> None:
+    return
 
 
 def parse_song_title(song_ini: Path) -> str:
@@ -102,7 +122,11 @@ def hash_song_folder(folder: Path) -> tuple[str, int, int]:
     return digest.hexdigest(), total_size, file_count
 
 
-def build_manifest(library: Path, log: Callable[[str], None]) -> dict[str, dict[str, object]]:
+def build_library_state(
+    library: Path,
+    log: Callable[[str], None],
+    progress: ProgressCallback = noop_progress,
+) -> tuple[dict[str, dict[str, object]], dict[str, Song]]:
     library = library.resolve()
     if not library.exists() or not library.is_dir():
         raise ValueError(f"Library path does not exist or is not a folder: {library}")
@@ -110,10 +134,19 @@ def build_manifest(library: Path, log: Callable[[str], None]) -> dict[str, dict[
     song_dirs = find_song_dirs(library)
     log(f"Found {len(song_dirs)} song folders. Hashing files...")
     manifest: dict[str, dict[str, object]] = {}
+    song_index: dict[str, Song] = {}
 
-    for index, folder in enumerate(song_dirs, start=1):
+    for position, folder in enumerate(song_dirs, start=1):
         song_hash, size, file_count = hash_song_folder(folder)
         title = parse_song_title(folder / "song.ini")
+        song = Song(
+            hash=song_hash,
+            folder=folder,
+            folder_name=folder.name,
+            title=title,
+            size=size,
+            file_count=file_count,
+        )
         manifest.setdefault(
             song_hash,
             {
@@ -123,29 +156,18 @@ def build_manifest(library: Path, log: Callable[[str], None]) -> dict[str, dict[
                 "file_count": file_count,
             },
         )
-        if index % 25 == 0:
-            log(f"Hashed {index}/{len(song_dirs)} songs...")
+        song_index.setdefault(song_hash, song)
+        progress("Hashing", position, len(song_dirs), title)
+        if position % 25 == 0:
+            log(f"Hashed {position}/{len(song_dirs)} songs...")
 
+    log(f"Indexed {len(song_index)} local unique songs.")
+    return manifest, song_index
+
+
+def build_manifest(library: Path, log: Callable[[str], None]) -> dict[str, dict[str, object]]:
+    manifest, _index = build_library_state(library, log)
     return manifest
-
-
-def build_song_index(library: Path, log: Callable[[str], None]) -> dict[str, Song]:
-    index: dict[str, Song] = {}
-    for folder in find_song_dirs(library):
-        song_hash, size, file_count = hash_song_folder(folder)
-        index.setdefault(
-            song_hash,
-            Song(
-                hash=song_hash,
-                folder=folder,
-                folder_name=folder.name,
-                title=parse_song_title(folder / "song.ini"),
-                size=size,
-                file_count=file_count,
-            ),
-        )
-    log(f"Indexed {len(index)} local unique songs.")
-    return index
 
 
 def send_json(sock: socket.socket, payload: dict[str, object]) -> None:
@@ -171,15 +193,6 @@ def recv_json(sock: socket.socket) -> dict[str, object]:
     return json.loads(recv_exact(sock, size).decode("utf-8"))
 
 
-def stream_file(sock: socket.socket, path: Path) -> None:
-    with path.open("rb") as source:
-        while True:
-            chunk = source.read(CHUNK_SIZE)
-            if not chunk:
-                break
-            sock.sendall(chunk)
-
-
 def receive_file(sock: socket.socket, path: Path, size: int, progress: Callable[[int], None]) -> None:
     received = 0
     with path.open("wb") as target:
@@ -192,18 +205,59 @@ def receive_file(sock: socket.socket, path: Path, size: int, progress: Callable[
             progress(received)
 
 
-def make_song_zip(song: Song) -> Path:
-    temp = tempfile.NamedTemporaryFile(prefix="clone_hero_song_", suffix=".zip", delete=False)
-    temp_path = Path(temp.name)
-    temp.close()
+class ChunkedSocketWriter(io.RawIOBase):
+    def __init__(self, sock: socket.socket, progress: Callable[[int], None]) -> None:
+        super().__init__()
+        self.sock = sock
+        self.progress = progress
+        self.bytes_written = 0
+
+    def writable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def tell(self) -> int:
+        return self.bytes_written
+
+    def write(self, data: bytes | bytearray | memoryview) -> int:
+        chunk = bytes(data)
+        if not chunk:
+            return 0
+        self.sock.sendall(struct.pack("!Q", len(chunk)))
+        self.sock.sendall(chunk)
+        self.bytes_written += len(chunk)
+        self.progress(self.bytes_written)
+        return len(chunk)
+
+
+def stream_song_zip(sock: socket.socket, song: Song, progress: Callable[[int], None]) -> None:
+    writer = ChunkedSocketWriter(sock, progress)
     try:
-        with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+        with zipfile.ZipFile(writer, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
             for file_path in sorted((p for p in song.folder.rglob("*") if p.is_file()), key=lambda p: str(p.relative_to(song.folder)).lower()):
                 archive.write(file_path, file_path.relative_to(song.folder).as_posix())
-    except Exception:
-        temp_path.unlink(missing_ok=True)
-        raise
-    return temp_path
+    finally:
+        sock.sendall(struct.pack("!Q", 0))
+
+
+def receive_chunked_file(sock: socket.socket, path: Path, progress: Callable[[int], None]) -> None:
+    received = 0
+    with path.open("wb") as target:
+        while True:
+            chunk_size = struct.unpack("!Q", recv_exact(sock, 8))[0]
+            if chunk_size == 0:
+                break
+            remaining = chunk_size
+            while remaining:
+                chunk = sock.recv(min(CHUNK_SIZE, remaining))
+                if not chunk:
+                    raise ConnectionError("Connection closed during song transfer.")
+                target.write(chunk)
+                received += len(chunk)
+                remaining -= len(chunk)
+                progress(received)
 
 
 def safe_folder_name(name: str) -> str:
@@ -242,46 +296,68 @@ def extract_song_zip(zip_path: Path, destination: Path) -> None:
         raise
 
 
-def send_requested_songs(sock: socket.socket, requested_hashes: list[str], songs: dict[str, Song], log: Callable[[str], None]) -> None:
-    for song_hash in requested_hashes:
+def send_requested_songs(
+    sock: socket.socket,
+    requested_hashes: list[str],
+    songs: dict[str, Song],
+    log: Callable[[str], None],
+    progress: ProgressCallback = noop_progress,
+) -> None:
+    total = len(requested_hashes)
+    for position, song_hash in enumerate(requested_hashes, start=1):
         song = songs.get(song_hash)
         if song is None:
             log(f"Peer requested unknown song hash {song_hash[:12]}; skipping.")
+            progress("Sending", position, total, "Skipped missing local song")
             continue
 
-        log(f"Packing '{song.title}'...")
-        zip_path = make_song_zip(song)
-        try:
-            send_json(
-                sock,
-                {
-                    "type": "song",
-                    "hash": song.hash,
-                    "folder_name": song.folder_name,
-                    "title": song.title,
-                    "zip_size": zip_path.stat().st_size,
-                },
-            )
-            log(f"Sending '{song.title}'...")
-            stream_file(sock, zip_path)
-        finally:
-            zip_path.unlink(missing_ok=True)
+        send_json(
+            sock,
+            {
+                "type": "song_stream",
+                "hash": song.hash,
+                "folder_name": song.folder_name,
+                "title": song.title,
+                "size": song.size,
+                "file_count": song.file_count,
+            },
+        )
+        log(f"Streaming '{song.title}'...")
+
+        last_report = 0.0
+
+        def song_progress(bytes_sent: int) -> None:
+            nonlocal last_report
+            now = time.monotonic()
+            if now - last_report >= 1.0:
+                log(f"Streaming '{song.title}': {bytes_sent / (1024 * 1024):.1f} MB")
+                last_report = now
+
+        stream_song_zip(sock, song, song_progress)
+        progress("Sending", position, total, song.title)
     send_json(sock, {"type": "done"})
 
 
-def receive_requested_songs(sock: socket.socket, library: Path, expected_hashes: set[str], log: Callable[[str], None]) -> int:
+def receive_requested_songs(
+    sock: socket.socket,
+    library: Path,
+    expected_hashes: set[str],
+    log: Callable[[str], None],
+    report_progress: ProgressCallback = noop_progress,
+) -> int:
     received_count = 0
+    expected_total = len(expected_hashes)
     while True:
         message = recv_json(sock)
         message_type = message.get("type")
         if message_type == "done":
             return received_count
-        if message_type != "song":
+        if message_type not in {"song", "song_stream"}:
             raise ValueError(f"Unexpected message from peer: {message_type}")
 
         song_hash = str(message["hash"])
         title = str(message.get("title") or message.get("folder_name") or song_hash[:12])
-        zip_size = int(message["zip_size"])
+        zip_size = int(message.get("zip_size") or 0)
         if song_hash not in expected_hashes:
             log(f"Receiving unexpected song '{title}' anyway.")
 
@@ -291,19 +367,27 @@ def receive_requested_songs(sock: socket.socket, library: Path, expected_hashes:
 
         last_report = 0.0
 
-        def progress(bytes_received: int) -> None:
+        def transfer_progress(bytes_received: int) -> None:
             nonlocal last_report
             now = time.monotonic()
             if now - last_report >= 1.0 or bytes_received == zip_size:
-                percent = (bytes_received / zip_size * 100) if zip_size else 100
-                log(f"Receiving '{title}': {percent:.0f}%")
+                if zip_size:
+                    percent = bytes_received / zip_size * 100
+                    log(f"Receiving '{title}': {percent:.0f}%")
+                else:
+                    log(f"Receiving '{title}': {bytes_received / (1024 * 1024):.1f} MB")
                 last_report = now
 
         try:
-            receive_file(sock, temp_path, zip_size, progress)
+            if message_type == "song":
+                receive_file(sock, temp_path, zip_size, transfer_progress)
+            else:
+                receive_chunked_file(sock, temp_path, transfer_progress)
             destination = unique_destination(library, str(message.get("folder_name") or title))
             extract_song_zip(temp_path, destination)
             received_count += 1
+            progress_callback_current = min(received_count, expected_total) if expected_total else received_count
+            report_progress("Receiving", progress_callback_current, expected_total or None, title)
             log(f"Imported '{title}' into {destination.name}.")
         finally:
             temp_path.unlink(missing_ok=True)
@@ -328,10 +412,16 @@ def connect_as_client(host: str, port: int, log: Callable[[str], None]) -> socke
     return sock
 
 
-def sync_library(library: Path, mode: str, host: str, port: int, log: Callable[[str], None]) -> None:
+def sync_library(
+    library: Path,
+    mode: str,
+    host: str,
+    port: int,
+    log: Callable[[str], None],
+    progress: ProgressCallback = noop_progress,
+) -> None:
     library = library.resolve()
-    local_manifest = build_manifest(library, log)
-    local_index = build_song_index(library, log)
+    local_manifest, local_index = build_library_state(library, log, progress)
 
     with (connect_as_host(port, log) if mode == "host" else connect_as_client(host, port, log)) as sock:
         sock.settimeout(None)
@@ -357,13 +447,13 @@ def sync_library(library: Path, mode: str, host: str, port: int, log: Callable[[
 
         def sender() -> None:
             try:
-                send_requested_songs(sock, requested_by_peer, local_index, log)
+                send_requested_songs(sock, requested_by_peer, local_index, log, progress)
             except BaseException as exc:  # noqa: BLE001 - surfaced to caller after receiver exits.
                 sender_error.append(exc)
 
         thread = threading.Thread(target=sender, daemon=True)
         thread.start()
-        received = receive_requested_songs(sock, library, set(needed_from_peer), log)
+        received = receive_requested_songs(sock, library, set(needed_from_peer), log, progress)
         thread.join()
         if sender_error:
             raise sender_error[0]
@@ -378,7 +468,7 @@ class SyncApp:
         self.root.geometry("760x520")
         self.root.minsize(640, 430)
 
-        self.messages: queue.Queue[str] = queue.Queue()
+        self.messages: queue.Queue[str | tuple[str, int, int | None, str]] = queue.Queue()
         self.worker: threading.Thread | None = None
 
         self.mode_var = tk.StringVar(value="host")
@@ -386,6 +476,8 @@ class SyncApp:
         self.host_var = tk.StringVar(value="")
         self.port_var = tk.StringVar(value=str(initial_port))
         self.status_var = tk.StringVar(value="Idle")
+        self.progress_var = tk.DoubleVar(value=0)
+        self.progress_text_var = tk.StringVar(value="")
 
         self.build_ui()
         self.root.after(100, self.drain_logs)
@@ -420,6 +512,9 @@ class SyncApp:
         self.start_button = ttk.Button(actions, text="Start Sync", command=self.start_sync)
         self.start_button.grid(row=0, column=0, sticky="w")
         ttk.Label(actions, textvariable=self.status_var).grid(row=0, column=1, sticky="e")
+        self.progress_bar = ttk.Progressbar(actions, variable=self.progress_var, maximum=100)
+        self.progress_bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Label(actions, textvariable=self.progress_text_var).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(3, 0))
 
         log_frame = ttk.Frame(self.root, padding=(14, 0, 14, 14))
         log_frame.grid(row=2, column=0, sticky="nsew")
@@ -454,12 +549,30 @@ class SyncApp:
     def queue_log(self, message: str) -> None:
         self.messages.put(message)
 
+    def queue_progress(self, phase: str, current: int, total: int | None, detail: str) -> None:
+        self.messages.put((phase, current, total, detail))
+
+    def apply_progress(self, phase: str, current: int, total: int | None, detail: str) -> None:
+        if total:
+            percent = max(0.0, min(100.0, current / total * 100))
+            self.progress_bar.configure(mode="determinate", maximum=100)
+            self.progress_var.set(percent)
+            self.progress_text_var.set(f"{phase}: {current}/{total} - {detail}")
+        else:
+            self.progress_bar.configure(mode="determinate", maximum=100)
+            self.progress_var.set(100 if current else 0)
+            self.progress_text_var.set(f"{phase}: {detail}")
+
     def drain_logs(self) -> None:
         while True:
             try:
-                self.append_log(self.messages.get_nowait())
+                message = self.messages.get_nowait()
             except queue.Empty:
                 break
+            if isinstance(message, tuple):
+                self.apply_progress(*message)
+            else:
+                self.append_log(message)
         self.root.after(100, self.drain_logs)
 
     def start_sync(self) -> None:
@@ -486,12 +599,14 @@ class SyncApp:
 
         self.start_button.configure(state="disabled")
         self.status_var.set("Running")
+        self.progress_var.set(0)
+        self.progress_text_var.set("")
         self.append_log("")
         self.append_log(f"Starting sync for {library}")
 
         def run() -> None:
             try:
-                sync_library(library, mode, host, port, self.queue_log)
+                sync_library(library, mode, host, port, self.queue_log, self.queue_progress)
                 self.queue_log("Done.")
             except Exception as exc:  # noqa: BLE001 - show UI-friendly error.
                 self.queue_log(f"Error: {exc}")
@@ -538,7 +653,7 @@ def main() -> int:
             host = args.connect
         else:
             raise SystemExit("Use --host or --connect with --no-ui")
-        sync_library(Path(args.library).expanduser(), mode, host, args.port, log_print)
+        sync_library(Path(args.library).expanduser(), mode, host, args.port, log_print, progress_print)
         return 0
 
     run_ui(args.library, args.port)
