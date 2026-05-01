@@ -43,19 +43,19 @@ Choose your Clone Hero songs folder, then either:
 Host:
 
 ```powershell
-python .\clone_hero_sync.py --no-ui --host --library "PATH\TO\YOUR\SONGS"
+python .\clone_hero_sync.py --no-ui --host --library "<song library path>"
 ```
 
 Join:
 
 ```powershell
-python .\clone_hero_sync.py --no-ui --connect FRIEND_IP --library "PATH\TO\YOUR\SONGS"
+python .\clone_hero_sync.py --no-ui --connect FRIEND_IP --library "<song library path>"
 ```
 
 Optional custom port:
 
 ```powershell
-python .\clone_hero_sync.py --no-ui --host --library "PATH\TO\YOUR\SONGS" --port 50505
+python .\clone_hero_sync.py --no-ui --host --library "<song library path>" --port 50505
 ```
 
 ## Cleanup Tool
@@ -63,31 +63,31 @@ python .\clone_hero_sync.py --no-ui --host --library "PATH\TO\YOUR\SONGS" --port
 Always run a dry run first:
 
 ```powershell
-python .\song_cleanup\cleanup_songs.py --library "PATH\TO\YOUR\SONGS"
+python .\song_cleanup\cleanup_songs.py --library "<song library path>"
 ```
 
 Move duplicate folders into a cleanup folder inside the selected song library:
 
 ```powershell
-python .\song_cleanup\cleanup_songs.py --library "PATH\TO\YOUR\SONGS" --apply
+python .\song_cleanup\cleanup_songs.py --library "<song library path>" --apply
 ```
 
 Duplicates are moved to:
 
 ```text
-PATH\TO\YOUR\SONGS\cleanup\YYYYMMDD_HHMMSS\
+<song library path>\cleanup\YYYYMMDD_HHMMSS\
 ```
 
 Permanently delete duplicate folders:
 
 ```powershell
-python .\song_cleanup\cleanup_songs.py --library "PATH\TO\YOUR\SONGS" --apply --delete-duplicates
+python .\song_cleanup\cleanup_songs.py --library "<song library path>" --apply --delete-duplicates
 ```
 
 Rename kept folders to `Artist - Title`:
 
 ```powershell
-python .\song_cleanup\cleanup_songs.py --library "PATH\TO\YOUR\SONGS" --apply --rename-folders
+python .\song_cleanup\cleanup_songs.py --library "<song library path>" --apply --rename-folders
 ```
 
 ## Tests
