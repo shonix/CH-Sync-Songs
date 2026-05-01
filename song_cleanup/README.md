@@ -12,19 +12,19 @@ It is conservative by default:
 ## Dry Run
 
 ```powershell
-python .\song_cleanup\cleanup_songs.py --library "D:\Clone Hero\Songs"
+python .\song_cleanup\cleanup_songs.py --library "PATH\TO\YOUR\SONGS"
 ```
 
 ## Quarantine Duplicates
 
 ```powershell
-python .\song_cleanup\cleanup_songs.py --library "D:\Clone Hero\Songs" --apply
+python .\song_cleanup\cleanup_songs.py --library "PATH\TO\YOUR\SONGS" --apply
 ```
 
 Duplicates are moved into:
 
 ```text
-D:\Clone Hero\Songs\_cleanup_duplicates\YYYYMMDD_HHMMSS\
+PATH\TO\YOUR\SONGS\cleanup\YYYYMMDD_HHMMSS\
 ```
 
 ## Delete Duplicates
@@ -32,13 +32,13 @@ D:\Clone Hero\Songs\_cleanup_duplicates\YYYYMMDD_HHMMSS\
 Run a dry run first without delete:
 
 ```powershell
-python .\song_cleanup\cleanup_songs.py --library "D:\Clone Hero\Songs"
+python .\song_cleanup\cleanup_songs.py --library "PATH\TO\YOUR\SONGS"
 ```
 
 Then permanently delete the duplicate folders:
 
 ```powershell
-python .\song_cleanup\cleanup_songs.py --library "D:\Clone Hero\Songs" --apply --delete-duplicates
+python .\song_cleanup\cleanup_songs.py --library "PATH\TO\YOUR\SONGS" --apply --delete-duplicates
 ```
 
 This removes duplicate folders from disk. Use quarantine mode if you want an easy restore path.
@@ -46,7 +46,7 @@ This removes duplicate folders from disk. Use quarantine mode if you want an eas
 ## Quarantine Duplicates And Rename Kept Folders
 
 ```powershell
-python .\song_cleanup\cleanup_songs.py --library "D:\Clone Hero\Songs" --apply --rename-folders
+python .\song_cleanup\cleanup_songs.py --library "PATH\TO\YOUR\SONGS" --apply --rename-folders
 ```
 
 Kept folders are renamed to:

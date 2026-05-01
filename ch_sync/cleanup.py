@@ -155,7 +155,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--apply", action="store_true", help="Actually move folders. Without this, only prints a dry-run plan.")
     parser.add_argument("--delete-duplicates", action="store_true", help="Permanently delete duplicate folders instead of moving them to quarantine. Requires --apply.")
     parser.add_argument("--rename-folders", action="store_true", help="Also rename kept song folders to 'Artist - Title'.")
-    parser.add_argument("--quarantine", default="_cleanup_duplicates", help="Folder under the library where duplicates are moved.")
+    parser.add_argument("--quarantine", default="cleanup", help="Folder under the selected song library where duplicates are moved.")
     return parser.parse_args()
 
 
