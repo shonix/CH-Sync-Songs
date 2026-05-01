@@ -2,6 +2,10 @@
 
 This helper scans a Clone Hero song library for duplicate folders and optional folder-name cleanup.
 
+Only use this helper on song folders and assets that you own, created yourself, are licensed to use, or are otherwise legally allowed to keep and manage.
+
+Do not use this project to copy, distribute, or share copyrighted material of any kind without permission. This includes copyrighted music, charts, artwork, game assets, DLC, or any other protected content.
+
 It is conservative by default:
 
 - Dry run unless `--apply` is passed.

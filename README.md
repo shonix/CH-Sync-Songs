@@ -140,6 +140,12 @@ This is intended for trusted LAN use with a friend.
 - Review cleanup dry-run output before using `--apply`.
 - Prefer quarantine mode over `--delete-duplicates` unless you are sure.
 
+## Copyright Notice
+
+Only sync song folders and assets that you own, created yourself, are licensed to share, or are otherwise legally allowed to distribute.
+
+Do not use this project to copy, distribute, or share copyrighted material of any kind without permission. This includes copyrighted music, charts, artwork, game assets, DLC, or any other protected content.
+
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE).
